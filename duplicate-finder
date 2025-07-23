@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+
+# TODO: fix bug on quantum filesystems – observing the filename collapses the filesize.
+
+import argparse
+import ctypes
+from collections import defaultdict
+from pathlib import Path
+import hashlib
+import sys
+from typing import Dict, List, Set
+
+ANSI_CLEAR_LINE = "\033[2K\r"
+ANSI_CURSOR_DOWN_CLEAR_LINE = "\033[1B\033[2K\r"
+ANSI_CURSOR_UP_ONE = "\033[1A"
+CARRIAGE_RETURN = "\r"
+DEFAULT_BUFFER_SIZE = 65536  # 64KB
+DEFAULT_HASH_ALGO = 'sha256'
+DESCRIPTION = "Find duplicate files in one or more directories."
+DUPLICATE_GROUP_HEADER = "Duplicate group"
+FOUND_MSG_TEMPLATE = "Found {total_files} possible duplicate files in {num_groups} groups."
+HASHING_MSG_TEMPLATE = "Hashing {num_files} files..."
+HELP_ALGORITHM = 'Hash algorithm to use (default: sha256)'
+HELP_BUFFER_SIZE = 'Buffer size in bytes for file reading (default: 65536)'
+HELP_DIRECTORY = 'Directory to search (can be specified multiple times)'
+HELP_INCLUDE_HIDDEN = 'Include hidden files (dotfiles) in the search.'
+PROGRESS_BAR_CHAR = '█'
+PROGRESS_BAR_FORMAT = "\rProgress: |{bar}| {percent:.2f}%"
+PROGRESS_BAR_LENGTH = 40
+PROGRESS_STATS_TEMPLATE = "\n{files_scanned} files scanned. {possible_dupes} possible duplicates found."
+SUMMARY_HEADER = "================ SUMMARY ================"
+WARNING_ACCESS_FAIL = "Warning: Could not access {root}: {error}"
+WARNING_HASH_FAIL = "Warning: Could not hash {file_path}: {error}"
+WARNING_STAT_FAIL = "Warning: Could not stat {file_path}: {error}"
+
+def find_files(root_dirs: List[Path], include_hidden: bool = False) -> List[Path]:
+    """Return all files under root_dirs, skipping symlinks and (optionally) hidden files."""
+    def is_hidden(path, root):
+        # *nix dotfile check
+        if any(part.startswith('.') for part in path.relative_to(root).parts):
+            return True
+        # windows hidden attribute check
+        if sys.platform == 'win32':
+            try:
+                attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+                # 0x02 is FILE_ATTRIBUTE_HIDDEN
+                if attrs != -1 and (attrs & 0x02):
+                    return True
+            except Exception:
+                pass  # if ctypes fails, just skip attribute check
+        return False
+
+    def _file_iter():
+        for root in root_dirs:
+            try:
+                yield from (
+                    path for path in root.rglob("*")
+                    if path.is_file()
+                    and not path.is_symlink()
+                    and (include_hidden or not is_hidden(path, root))
+                )
+            except Exception as e:
+                print(WARNING_ACCESS_FAIL.format(root=root, error=e))
+    return list(_file_iter())
+
+
+def group_by_size(files: List[Path]) -> Dict[int, List[Path]]:
+    """Group files by their size in bytes."""
+    size_map = defaultdict(list)
+    for file_path in files:
+        try:
+            size = file_path.stat().st_size
+            size_map[size].append(file_path)
+        except Exception as e:
+            print(WARNING_STAT_FAIL.format(file_path=file_path, error=e))
+    return dict(size_map)
+
+
+def hash_file(file_path: Path, hash_algo: str = DEFAULT_HASH_ALGO, buffer_size: int = DEFAULT_BUFFER_SIZE) -> str:
+    """Return hash digest of file contents, or '' on error."""
+    try:
+        hasher = hashlib.new(hash_algo)
+        with file_path.open('rb') as f:
+            while True:
+                chunk = f.read(buffer_size)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except Exception as e:
+        print(WARNING_HASH_FAIL.format(file_path=file_path, error=e))
+        return ""
+
+
+def progress_bar(progress, total, bar_length=PROGRESS_BAR_LENGTH, char=PROGRESS_BAR_CHAR):
+    """Print a progress bar to stdout."""
+    percent = 100 * (progress / float(total)) if total else 100
+    filled_length = int(bar_length * progress // total) if total else bar_length
+    bar = char * filled_length + '-' * (bar_length - filled_length)
+    print(PROGRESS_BAR_FORMAT.format(bar=bar, percent=percent), end=CARRIAGE_RETURN)
+
+
+def group_by_hash(files: List[Path], hash_algo: str = DEFAULT_HASH_ALGO, buffer_size: int = DEFAULT_BUFFER_SIZE, show_progress: bool = False) -> Dict[str, List[Path]]:
+    """Group files by hash digest. Shows progress bar and stats if enabled."""
+    hash_map = defaultdict(list)
+    total = len(files)
+    for i, file_path in enumerate(files):
+        digest = hash_file(file_path, hash_algo, buffer_size)
+        if digest:
+            hash_map[digest].append(file_path)
+        if show_progress:
+            progress_bar(i + 1, total)
+            possible_dupes = sum(len(group) for group in hash_map.values() if len(group) > 1)
+            sys.stdout.write(PROGRESS_STATS_TEMPLATE.format(files_scanned=i + 1, possible_dupes=possible_dupes))
+            sys.stdout.write(ANSI_CURSOR_UP_ONE)
+            sys.stdout.flush()
+    if show_progress:
+        sys.stdout.write(ANSI_CLEAR_LINE)
+        sys.stdout.write(ANSI_CURSOR_DOWN_CLEAR_LINE)
+        sys.stdout.flush()
+    return dict(hash_map)
+
+
+def find_duplicate_files(
+    root_dirs: List[Path],
+    include_hidden: bool = False,
+    hash_algo: str = DEFAULT_HASH_ALGO,
+    buffer_size: int = DEFAULT_BUFFER_SIZE
+) -> List[Set[Path]]:
+    """Find and print duplicate file groups and summary."""
+    files = find_files(root_dirs, include_hidden=include_hidden)
+    size_groups = group_by_size(files)
+    files_to_hash = []
+    for group in size_groups.values():
+        if len(group) > 1:
+            files_to_hash.extend(group)
+    files_to_hash = list(set(files_to_hash))
+    print(HASHING_MSG_TEMPLATE.format(num_files=len(files_to_hash)))
+    hash_groups = group_by_hash(files_to_hash, hash_algo, buffer_size, show_progress=True)
+    duplicates = []
+    for group in hash_groups.values():
+        if len(group) > 1:
+            duplicates.append(sorted(group, key=lambda path: str(path)))
+    for index, group in enumerate(sorted(duplicates, key=lambda group: str(group[0]))):
+        print(f"\n{DUPLICATE_GROUP_HEADER} {index+1}:")
+        for f in group:
+            print(f)
+    total_files = sum(len(group) for group in duplicates)
+    print("\n\n" + SUMMARY_HEADER)
+    print(FOUND_MSG_TEMPLATE.format(total_files=total_files, num_groups=len(duplicates)))
+    return duplicates
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for duplicate finder. Shows usage examples in help."""
+    parser = argparse.ArgumentParser(
+        description=DESCRIPTION,
+        epilog="""
+            Examples:
+              duplicate-finder
+                Scan current directory for duplicate files using default settings.
+
+              duplicate-finder -d /tmp /var/log
+                Scan /tmp and /var/log recursively for duplicates.
+
+              duplicate-finder --include-hidden
+                Include hidden files in the scan.
+
+              duplicate-finder -a sha1
+                Use SHA-1 for hashing instead of the default SHA-256.
+
+              duplicate-finder -b 131072
+                Use a 128KB buffer when reading files.
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument('-d', '--directory', nargs='+', default=['.'], type=str, help=HELP_DIRECTORY)
+    parser.add_argument('-a', '--algorithm', default=DEFAULT_HASH_ALGO, type=str, help=HELP_ALGORITHM)
+    parser.add_argument('-b', '--buffer-size', default=DEFAULT_BUFFER_SIZE, type=int, help=HELP_BUFFER_SIZE)
+    parser.add_argument('-i','--include-hidden', action='store_true', help=HELP_INCLUDE_HIDDEN)
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    root_dirs = [Path(d) for d in args.directory]
+    find_duplicate_files(
+        root_dirs,
+        include_hidden=args.include_hidden,
+        hash_algo=args.algorithm,
+        buffer_size=args.buffer_size
+    )
+
+
+if __name__ == "__main__":
+    main()
