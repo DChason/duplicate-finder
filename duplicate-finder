@@ -33,6 +33,7 @@ WARNING_ACCESS_FAIL = "Warning: Could not access {root}: {error}"
 WARNING_HASH_FAIL = "Warning: Could not hash {file_path}: {error}"
 WARNING_STAT_FAIL = "Warning: Could not stat {file_path}: {error}"
 
+
 def find_files(root_dirs: List[Path], include_hidden: bool = False) -> List[Path]:
     """Return all files under root_dirs, skipping symlinks and (optionally) hidden files."""
     def is_hidden(path, root):
@@ -100,7 +101,12 @@ def progress_bar(progress, total, bar_length=PROGRESS_BAR_LENGTH, char=PROGRESS_
     print(PROGRESS_BAR_FORMAT.format(bar=bar, percent=percent), end=CARRIAGE_RETURN)
 
 
-def group_by_hash(files: List[Path], hash_algo: str = DEFAULT_HASH_ALGO, buffer_size: int = DEFAULT_BUFFER_SIZE, show_progress: bool = False) -> Dict[str, List[Path]]:
+def group_by_hash(
+    files: List[Path],
+    hash_algo: str = DEFAULT_HASH_ALGO,
+    buffer_size: int = DEFAULT_BUFFER_SIZE,
+    show_progress: bool = False
+) -> Dict[str, List[Path]]:
     """Group files by hash digest. Shows progress bar and stats if enabled."""
     hash_map = defaultdict(list)
     total = len(files)
@@ -177,7 +183,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('-d', '--directory', nargs='+', default=['.'], type=str, help=HELP_DIRECTORY)
     parser.add_argument('-a', '--algorithm', default=DEFAULT_HASH_ALGO, type=str, help=HELP_ALGORITHM)
     parser.add_argument('-b', '--buffer-size', default=DEFAULT_BUFFER_SIZE, type=int, help=HELP_BUFFER_SIZE)
-    parser.add_argument('-i','--include-hidden', action='store_true', help=HELP_INCLUDE_HIDDEN)
+    parser.add_argument('-i', '--include-hidden', action='store_true', help=HELP_INCLUDE_HIDDEN)
     return parser.parse_args()
 
 
