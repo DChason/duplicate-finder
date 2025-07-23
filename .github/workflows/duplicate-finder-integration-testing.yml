@@ -1,0 +1,58 @@
+name: duplicate-finder-integration-testing
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Make integration test workspace
+        run: |
+          mkdir -p test_env/parent/{a,b,c,d,e}
+          echo 'duplicate content' > test_env/parent/a/file1.txt
+          echo 'duplicate content' > test_env/parent/b/file2.txt
+          echo 'duplicate content' > test_env/parent/c/file3.txt
+          echo 'unique content 1' > test_env/parent/d/file4.txt
+          echo 'unique content 2' > test_env/parent/e/file5.txt
+
+      - name: Test finds duplicates
+        run: |
+          python3 ./duplicate-finder -d test_env/parent > output.txt
+          grep 'Duplicate group' output.txt
+          grep 'file1.txt' output.txt
+          grep 'file2.txt' output.txt
+          grep 'file3.txt' output.txt
+          ! grep 'file4.txt' output.txt
+          ! grep 'file5.txt' output.txt
+
+      - name: Clean integration test workspace
+        run: rm -rf test_env output.txt
+
+      - name: Make integration test workspace (no duplicates)
+        run: |
+          mkdir -p test_env/parent/{a,b,c,d,e}
+          echo 'unique content 1' > test_env/parent/a/file1.txt
+          echo 'unique content 2' > test_env/parent/b/file2.txt
+          echo 'unique content 3' > test_env/parent/c/file3.txt
+          echo 'unique content 4' > test_env/parent/d/file4.txt
+          echo 'unique content 5' > test_env/parent/e/file5.txt
+
+      - name: Test finds no duplicates
+        run: |
+          python3 ./duplicate-finder -d test_env/parent > output.txt
+          ! grep 'Duplicate group' output.txt
+
+      - name: Clean integration test workspace (no duplicates)
+        run: rm -rf test_env output.txt
